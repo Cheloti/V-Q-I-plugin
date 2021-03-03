@@ -34,12 +34,20 @@ import numpy as np
 from osgeo import gdal, osr
 
 from qgis.PyQt.QtCore import QCoreApplication
-from py
+from PyQt5.QtGui import QColor
 from qgis.core import (QgsProcessing,
                        QgsFeatureSink,
+                       QgsProcessingLayerPostProcessorInterface,
+                       QgsProcessingParameterRasterDestination,
+                       QgsRasterLayer,
+                       QgsRasterShader,
+                       QgsColorRampShader,
+                       QgsPresetSchemeColorRamp,
+                       QgsRasterBandStats,
+                       QgsSingleBandPseudoColorRenderer,
                        QgsProcessingAlgorithm,
                        QgsProcessingParameterFeatureSource,
-                       QgsProcessingParameterFeatureSink
+                       QgsProcessingParameterFeatureSink,
                        QgsProcessingParameterFile)
 
 from .utils import open_and_reproject_raster
@@ -79,7 +87,7 @@ class VegetationQualityIndexAlgorithm(QgsProcessingAlgorithm):
         # geometry.
 
 
-       self.addParameter(
+        self.addParameter(
             QgsProcessingParameterFile(
                 self.FIRE_RISK,
                 description=self.tr('FIRE RISK (FR) map raster'),
@@ -138,11 +146,88 @@ class VegetationQualityIndexAlgorithm(QgsProcessingAlgorithm):
         ref_rast = gdal.Open(ref_file, gdal.GA_ReadOnly)
 
         # Open Fire Risk (FR) raster
-        fr_file = self.parameterAsOutputLayer(parameters, self.FIRE_RISK,context)
+        fr_file = self.parameterAsOutputLayer(parameters, self.FIRE_RISK, context)
         fr_rast = open_and_reproject_raster(fr_file, ref_file, feedback)
         fr_band = fr_rast.GetRasterBand(1)
 
+        # Open EROSION PROTECTION (EP) raster
+        ep_file = self.parameterAsOutputLayer(parameters, self.EROSION_PROTECTION, context)
+        ep_rast = open_and_reproject_raster(ep_file, ref_file, feedback)
+        ep_band = ep_rast.GetRasterBand(1)
+
+        # Open Drought Resistance (DR) raster 
+        dr_file = self.parameterAsOutputLayer(parameters, self.DROUGHT_RESISTANCE, context)
+        dr_rast = open_and_reproject_raster(dr_file, ref_file, feedback)
+        dr_band = dr_rast.GetRasterBand(1)
+
+        # Open Plant Cover (PC) raster
+        pc_file = self.parameterAsOutputLayer(parameters, self.PLANT_COVER, context)
+        pc_rast = open_and_reproject_raster(pc_file, ref_file, feedback)
+        pc_band = pc_rast.GetRasterBand(1)
+
+        # Open the output raster for writing into Geotiff
+        xorigin, xres, xskew, yorigin, yskew, yres =  ref_rast.GetGeoTransform()
+        cols = ref_rast.RasterXSize
+        rows = ref_rast.RasterYSize
+        output_file = self.parameterAsOutputLayer(parameters, self.OUTPUT, context)
+        driver = gdal.GetDriverByName("GTiff")
+        out_rast = driver.Create(output_file, cols, rows, 1, gdal.GDT_Float64)
+        out_rast.SetGeoTransform((xorigin, xres, 0, yorigin, 0, yres))
+        out_band = out_rast.GetRasterBand(1)
+
+        # Processing the raster datasets in chunks/blocks
+        block_xsize, block_ysize = pc_band.GetBlockSize()
+        for b_y, yoff in enumerate(range(0, fr_rast.RasterYSize, block_ysize)):
+            for b_x, xoff in enumerate(range(0, fr_rast.RasterXSize, block_xsize)):
+                win_xsize, win_ysize = fr_band.GetActualBlockSize(b_x, b_y)
+
+                FR = fr_band.ReadAsArray(xoff=xoff, yoff=yoff, win_xsize=win_xsize, win_ysize=win_ysize)
+                FR = np.ma.masked_equal(FR, fr_band.GetNoDataValue())
+                FR = FR.astype('float64')
+
+                EP = ep_band.ReadAsArray(xoff=xoff, yoff=yoff, win_xsize=win_xsize, win_ysize=win_ysize)
+                EP = np.ma.masked_equal(EP, ep_band.GetNoDataValue())
+                EP = EP.astype('float64')
+
+                DR = dr_band.ReadAsArray(xoff=xoff, yoff=yoff, win_xsize=win_xsize, win_ysize=win_ysize)
+                DR = np.ma.masked_equal(DR, dr_band.GetNoDataValue())
+                DR = DR.astype('float64')
+
+                PC = pc_band.ReadAsArray(xoff=xoff, yoff=yoff, win_xsize=win_xsize, win_ysize=win_ysize)
+                PC = np.ma.masked_equal(PC, pc_band.GetNoDataValue())
+                PC = PC.astype('float64')
+
+
+        # Calculation of Vegetation Quality Index (VQI)
+        VQI = (FR * EP * DR * PC)**0.25
+
+        # Write processed block to file
+        out_band.WriteArray(VQI.filled(-9999), xoff=xoff, yoff=yoff)
+
+
+        out_band.SetNoDataValue(-9999)
+        outRasterSRS = osr.SpatialReference()
+        outRasterSRS.ImportFromWkt(ref_rast.GetProjectionRef())
+        out_rast.SetProjection(outRasterSRS.ExportToWkt())
+        out_band.FlushCache()
+
+
+        # Delete the variables to trigger the writing of the output file
+        out_rast = None
+        out_band = None
+        driver = None
+
+        # VQIStylePostProcessor.instance = VQIStylePostProcessor()
+
+        # if context.willLoadLayerOnCompletion(output_file):
+        #     context.layerToLoadOnCompletionDetails(output_file).setPostProcessor(
+        #         VQIStylePostProcessor.create()
+        #     )
+
         return {self.OUTPUT: output_file}
+
+
+
 
     def name(self):
         """
@@ -152,7 +237,7 @@ class VegetationQualityIndexAlgorithm(QgsProcessingAlgorithm):
         lowercase alphanumeric characters only and no spaces or other
         formatting characters.
         """
-        return 'Vegetatio Quality Index'
+        return 'Vegetation Quality Index'
 
     def displayName(self):
         """

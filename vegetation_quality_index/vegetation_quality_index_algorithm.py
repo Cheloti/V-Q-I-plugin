@@ -52,6 +52,73 @@ from qgis.core import (QgsProcessing,
 
 from .utils import open_and_reproject_raster
 
+
+class VQIStylePostProcessor(QgsProcessingLayerPostProcessorInterface):
+    instance = None
+
+    def postProcessLayer(self, layer, context, feedback):
+
+        """
+        Apply quantile classification.
+        """
+        if not isinstance(layer, QgsRasterLayer):
+            return
+
+        feedback.pushInfo('Apply styling(symbology) to raster layer..')
+
+        def get_quantile_ramp_item_list(layer):
+            """
+            Returns the quantile ramp item list and overrides the ramp items
+            labels with our custom categories.
+
+            We use a dummy shader function to help us with the quantile 
+            classification
+            """
+            stats = layer.dataProvider().bandStatistics(1, QgsRasterBandStats.All)
+            min_val = stats.minimumValue
+            max_value = stats.maximumValue
+
+            colors = [
+                QColor('#4c724b'),
+                QColor('#89a167'),
+                QColor('#d9d98d'),
+                QColor('#b08d64'),
+                QColor('#8a514a')
+            ]
+            dummy_shader = QgsColorRampShader(minimumValue=min_val, maximumValue=max_val,
+                                                colorRamp=QgsPresetSchemeColorRamp(colors=colors),
+                                                type=QgsColorRampShader.Discrete,
+                                                classificationMode=QgsColorRampShader.Quantile)
+            dummy_shader.classifyColorRamp(classes=5, band=1, input=layer.dataProvider())
+
+            labels = ['Very low', 'Low', 'Moderate', 'High', 'Very high']
+            ramp_items = []
+            for i, ramp_item in enumerate(dummy_shader.colorRampItemList()):
+                ramp_item.label = labels[i]
+                ramp_items.append(ramp_item)
+
+            return ramp_items
+
+        shader_fnc = QgsColorRampShader()
+        shader_fnc.setColorRampType(QgsColorRampShader.Discrete)
+        shader_fnc.setColorRampItemList(get_quantile_ramp_item_list(layer))
+
+        shader = QgsRasterShader()
+        shader.setRasterShaderFunction(shader_fnc)
+        renderer = QgsSingleBandPseudoColorRenderer(layer.dataProvider(), 1, shader)
+        layer.setRenderer(renderer)
+
+    @staticmethod
+    def create() -> 'VQIStylePostProcessor':
+        """
+        Returns a new instance of the post processor.
+        """
+        VQIStylePostProcessor.instance = VQIStylePostProcessor()
+        return VQIStylePostProcessor.instance
+
+
+
+
 class VegetationQualityIndexAlgorithm(QgsProcessingAlgorithm):
     """
     This is an example algorithm that takes a vector layer and
@@ -132,7 +199,7 @@ class VegetationQualityIndexAlgorithm(QgsProcessingAlgorithm):
         self.addParameter(
             QgsProcessingParameterRasterDestination(
                 self.OUTPUT,
-                self.tr('Wind Erosion Index (ILSWE) output raster'),
+                self.tr('Vegetation Index (VQI) output raster'),
                 'TIFF files (*.tif)'
             )
         )
@@ -176,7 +243,7 @@ class VegetationQualityIndexAlgorithm(QgsProcessingAlgorithm):
         out_band = out_rast.GetRasterBand(1)
 
         # Processing the raster datasets in chunks/blocks
-        block_xsize, block_ysize = pc_band.GetBlockSize()
+        block_xsize, block_ysize = fr_band.GetBlockSize()
         for b_y, yoff in enumerate(range(0, fr_rast.RasterYSize, block_ysize)):
             for b_x, xoff in enumerate(range(0, fr_rast.RasterXSize, block_xsize)):
                 win_xsize, win_ysize = fr_band.GetActualBlockSize(b_x, b_y)
@@ -223,7 +290,10 @@ class VegetationQualityIndexAlgorithm(QgsProcessingAlgorithm):
         #     context.layerToLoadOnCompletionDetails(output_file).setPostProcessor(
         #         VQIStylePostProcessor.create()
         #     )
-
+        if context.willLoadLayerOnCompletion(output_file):
+            context.layerToLoadOnCompletionDetails(output_file).setPostProcessor(
+                VQIStylePostProcessor.create()
+            )
         return {self.OUTPUT: output_file}
 
 

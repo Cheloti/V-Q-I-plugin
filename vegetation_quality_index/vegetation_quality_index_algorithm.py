@@ -35,20 +35,17 @@ from osgeo import gdal, osr
 
 from qgis.PyQt.QtCore import QCoreApplication
 from PyQt5.QtGui import QColor
-from qgis.core import (QgsProcessing,
-                       QgsFeatureSink,
+# Importing processing modules
+from qgis.core import (QgsProcessingAlgorithm,
                        QgsProcessingLayerPostProcessorInterface,
+                       QgsProcessingParameterFile,
                        QgsProcessingParameterRasterDestination,
                        QgsRasterLayer,
                        QgsRasterShader,
                        QgsColorRampShader,
                        QgsPresetSchemeColorRamp,
                        QgsRasterBandStats,
-                       QgsSingleBandPseudoColorRenderer,
-                       QgsProcessingAlgorithm,
-                       QgsProcessingParameterFeatureSource,
-                       QgsProcessingParameterFeatureSink,
-                       QgsProcessingParameterFile)
+                       QgsSingleBandPseudoColorRenderer)
 
 from .utils import open_and_reproject_raster
 
@@ -249,30 +246,37 @@ class VegetationQualityIndexAlgorithm(QgsProcessingAlgorithm):
                 win_xsize, win_ysize = fr_band.GetActualBlockSize(b_x, b_y)
 
                 FR = fr_band.ReadAsArray(xoff=xoff, yoff=yoff, win_xsize=win_xsize, win_ysize=win_ysize)
-                FR = np.ma.masked_equal(FR, fr_band.GetNoDataValue())
+                fr_nodata_mask = np.ma.masked_equal(FR, fr_band.GetNoDataValue()).mask
                 FR = FR.astype('float64')
-
-                EP = ep_band.ReadAsArray(xoff=xoff, yoff=yoff, win_xsize=win_xsize, win_ysize=win_ysize)
-                EP = np.ma.masked_equal(EP, ep_band.GetNoDataValue())
-                EP = EP.astype('float64')
+                FR = np.ma.masked_array(FR, fr_nodata_mask)
 
                 DR = dr_band.ReadAsArray(xoff=xoff, yoff=yoff, win_xsize=win_xsize, win_ysize=win_ysize)
-                DR = np.ma.masked_equal(DR, dr_band.GetNoDataValue())
+                dr_nodata_mask = np.ma.masked_equal(DR, dr_band.GetNoDataValue()).mask
                 DR = DR.astype('float64')
+                DR = np.ma.masked_array(DR, dr_nodata_mask)
 
                 PC = pc_band.ReadAsArray(xoff=xoff, yoff=yoff, win_xsize=win_xsize, win_ysize=win_ysize)
-                PC = np.ma.masked_equal(PC, pc_band.GetNoDataValue())
+                pc_nodata_mask = np.ma.masked_equal(PC, pc_band.GetNoDataValue()).mask
                 PC = PC.astype('float64')
+                PC = np.ma.masked_array(PC, pc_nodata_mask)
+
+                EP = ep_band.ReadAsArray(xoff=xoff, yoff=yoff, win_xsize=win_xsize, win_ysize=win_ysize)
+                ep_nodata_mask = np.ma.masked_equal(EP, ep_band.GetNoDataValue()).mask
+                EP = EP.astype('float64')
+                EP = np.ma.masked_array(EP, ep_nodata_mask)
 
 
-        # Calculation of Vegetation Quality Index (VQI)
-        VQI = (FR * EP * DR * PC)**0.25
+                # Calculation of Vegetation Quality Index (VQI)
+                VQI = (FR * EP * DR * PC)**(0.25)
 
-        # Write processed block to file
-        out_band.WriteArray(VQI.filled(-9999), xoff=xoff, yoff=yoff)
+                # Fill  the nodata value with QGIS's default
+                VQI = VQI.filled(-3.4028230607370965e+38)
+
+                # Write processed block to file
+                out_band.WriteArray(VQI, xoff=xoff, yoff=yoff)
 
 
-        out_band.SetNoDataValue(-9999)
+        out_band.SetNoDataValue(-3.4028230607370965e+38)
         outRasterSRS = osr.SpatialReference()
         outRasterSRS.ImportFromWkt(ref_rast.GetProjectionRef())
         out_rast.SetProjection(outRasterSRS.ExportToWkt())
